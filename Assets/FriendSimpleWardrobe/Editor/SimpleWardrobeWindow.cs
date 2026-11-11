@@ -20,6 +20,9 @@ namespace FriendAvatarTools.Wardrobe
         [SerializeField] private List<GameObject> outfits = new List<GameObject>();
         [SerializeField] private int initialOutfit;
         private Vector2 scroll;
+        private string diagnostics;
+        private string loadProblem;
+        private Vector2 diagnosticScroll;
 
         [MenuItem("Tools/フレンド向け/かんたん衣装切替")]
         private static void Open()
@@ -31,12 +34,17 @@ namespace FriendAvatarTools.Wardrobe
                 var descriptor = selected.GetComponentInParent<VRCAvatarDescriptor>(true);
                 if (descriptor) window.LoadAvatar(descriptor);
             }
-            window.minSize = new Vector2(410, 300);
+            window.minSize = new Vector2(460, 520);
         }
 
         private void OnGUI()
         {
-            EditorGUILayout.HelpBox("先に着せ替えを済ませ、Hierarchyから衣装を追加してください。1着を選ぶと、登録した他の衣装が非表示になります。", MessageType.Info);
+            EditorGUILayout.HelpBox("① アバターを指定 → ② 取り付け済みの衣装を2着以上追加 → ③ 初期衣装を選び作成 → ④ SDKでBuild & Test。衣装のサイズ合わせやボーン結合は先に済ませてください。", MessageType.Info);
+            using (new EditorGUILayout.HorizontalScope())
+            {
+                if (GUILayout.Button("導入ガイド")) Application.OpenURL("https://github.com/Hiharu/simple-wardrobe#readme");
+                if (GUILayout.Button("Modular Avatarの導入")) Application.OpenURL("https://modular-avatar.nadena.dev/docs/intro");
+            }
             var next = (VRCAvatarDescriptor)EditorGUILayout.ObjectField("アバター", avatar, typeof(VRCAvatarDescriptor), true);
             if (next != avatar) LoadAvatar(next);
             using (new EditorGUI.DisabledScope(!avatar))
@@ -65,19 +73,41 @@ namespace FriendAvatarTools.Wardrobe
                 using (new EditorGUI.DisabledScope(outfits.Count >= 32))
                     if (GUILayout.Button("入力欄を追加")) outfits.Add(null);
             }
-            string problem = Validate(avatar, outfits);
+            string problem = loadProblem ?? Validate(avatar, outfits);
             if (problem != null) EditorGUILayout.HelpBox(problem, MessageType.Warning);
             using (new EditorGUI.DisabledScope(problem != null || EditorApplication.isPlayingOrWillChangePlaymode))
                 if (GUILayout.Button("衣装切替メニューを作る・更新する", GUILayout.Height(32))) Apply();
+            using (new EditorGUILayout.HorizontalScope())
+            {
+                if (GUILayout.Button("環境チェック")) diagnostics = WardrobeDiagnostics.Build(avatar, outfits, loadProblem);
+                if (GUILayout.Button("診断結果をコピー"))
+                {
+                    diagnostics = WardrobeDiagnostics.Build(avatar, outfits, loadProblem);
+                    EditorGUIUtility.systemCopyBuffer = diagnostics;
+                    ShowNotification(new GUIContent("診断結果をコピーしました"));
+                }
+            }
+            EditorGUILayout.LabelField("診断には名前・パス・ログ本文を含めません。送信前に確認できます。", EditorStyles.wordWrappedMiniLabel);
+            if (!string.IsNullOrEmpty(diagnostics))
+            {
+                diagnosticScroll = EditorGUILayout.BeginScrollView(diagnosticScroll, GUILayout.Height(150));
+                EditorGUILayout.TextArea(diagnostics, GUILayout.ExpandHeight(true));
+                EditorGUILayout.EndScrollView();
+                EditorGUILayout.LabelField("チェック時点の結果です。設定変更後は再チェックしてください。", EditorStyles.miniLabel);
+            }
         }
 
         private void LoadAvatar(VRCAvatarDescriptor next)
         {
             avatar = next;
+            loadProblem = null;
+            diagnostics = null;
             outfits.Clear();
             initialOutfit = 0;
             var root = avatar ? avatar.transform.Find(RootName) : null;
             if (!IsGenerated(root)) return;
+            try
+            {
             var config = root.GetComponent<ModularAvatarParameters>().parameters.Single(p => p.nameOrPrefix == SelectionParameter);
             var controller = (AnimatorController)root.GetComponent<ModularAvatarMergeAnimator>().animator;
             foreach (var state in controller.layers[0].stateMachine.states)
@@ -88,6 +118,12 @@ namespace FriendAvatarTools.Wardrobe
                 outfits.Add(avatar.transform.Find(enabled.path)?.gameObject);
             }
             initialOutfit = Mathf.Clamp((int)config.defaultValue - 1, 0, Math.Max(0, outfits.Count - 1));
+            }
+            catch (Exception)
+            {
+                outfits.Clear();
+                loadProblem = "既存の登録内容を読み込めません。環境チェックの結果をコピーして相談してください。自動修復は行いません。";
+            }
         }
 
         private void AcceptDrop(Rect drop)
@@ -131,7 +167,7 @@ namespace FriendAvatarTools.Wardrobe
                 for (var parent = obj.transform.parent; parent != target.transform; parent = parent.parent)
                     if (!parent.gameObject.activeSelf) return obj.name + " の親オブジェクトを表示してから登録してください。";
                 for (int j = 0; j < i; j++)
-                    if (obj == items[j] || obj.transform.IsChildOf(items[j].transform) || items[j].transform.IsChildOf(obj.transform))
+                    if (items[j] && (obj == items[j] || obj.transform.IsChildOf(items[j].transform) || items[j].transform.IsChildOf(obj.transform)))
                         return "同じ衣装や、親子になっている衣装を重ねて登録できません。";
             }
             if (!previous && target.expressionParameters &&
@@ -145,6 +181,7 @@ namespace FriendAvatarTools.Wardrobe
             try
             {
                 Install(avatar, outfits, initialOutfit);
+                diagnostics = WardrobeDiagnostics.Build(avatar, outfits, null);
                 ShowNotification(new GUIContent("衣装切替メニューを追加しました"));
             }
             catch (Exception error)
